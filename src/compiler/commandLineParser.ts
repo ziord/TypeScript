@@ -1332,6 +1332,13 @@ namespace ts {
             defaultValueDescription: false,
         },
         {
+            name: "optimizeWithTypes",
+            type: "boolean",
+            category: Diagnostics.Language_and_Environment,
+            description: Diagnostics.Allow_optimizations_with_types_when_possible,
+            defaultValueDescription: false,
+        },
+        {
             // A list of plugins to load in the language service
             name: "plugins",
             type: "list",

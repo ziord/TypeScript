@@ -1,4 +1,18 @@
 
+# Patches
+This repo contains patches to TypeScript 4.9.5 for supporting norminality checks and generating optimized programs with types.
+Changes made include:
+- Norminality detection via property access expressions
+- tsconfig compiler option to optimize programs with types (`optimizeWithTypes`)
+- `emitter` changes including optimized fields ordering in class constructors 
+- New build script
+
+## Building
+Run `make` to build the project. The built tsc is stored in `built/local/tsc.js`.
+
+## Testing
+After building test programs using `node/bun built/local/tsc.js -p path/to/tsconfig.json`
+
 # TypeScript
 
 [![GitHub Actions CI](https://github.com/microsoft/TypeScript/workflows/CI/badge.svg)](https://github.com/microsoft/TypeScript/actions?query=workflow%3ACI)

@@ -1,5 +1,7 @@
 namespace ts {
     const brackets = createBracketsMap();
+    // Hook for compiler options. We need this for class property reordering.
+    let _myCompilerOptions: CompilerOptions;
 
     /*@internal*/
     export function isBuildInfoFile(file: string) {
@@ -24,6 +26,7 @@ namespace ts {
         includeBuildInfo?: boolean) {
         const sourceFiles = isArray(sourceFilesOrTargetSourceFile) ? sourceFilesOrTargetSourceFile : getSourceFilesToEmit(host, sourceFilesOrTargetSourceFile, forceDtsEmit);
         const options = host.getCompilerOptions();
+        _myCompilerOptions = options;
         if (outFile(options)) {
             const prepends = host.getPrependNodes();
             if (sourceFiles.length || prepends.length) {
@@ -2139,6 +2142,35 @@ namespace ts {
         function emitConstructor(node: ConstructorDeclaration) {
             emitModifiers(node, node.modifiers);
             writeKeyword("constructor");
+            {
+                const body = node.body;
+                if (body && isBlock(body) && _myCompilerOptions && _myCompilerOptions.optimizeWithTypes) {
+                    // reorder statements, putting all readonly assignment first
+                    const statements = (body.statements as any as Statement[]);
+                    const _statements = [];
+                    const others = [];
+                    for (const stmt of statements) {
+                        if (isExpressionStatement(stmt) && isAssignmentExpression(stmt.expression)) {
+                            const tmp = stmt as any;
+                            if (tmp.original) {
+                                if (some(tmp.original.modifiers, (token: any) => token.kind === SyntaxKind.ReadonlyKeyword)) {
+                                    _statements.push(stmt);
+                                    continue;
+                                } else if (tmp.original.original) {
+                                    if (some(tmp.original.original.modifiers, (token: any) => token.kind === SyntaxKind.ReadonlyKeyword)) {
+                                        _statements.push(stmt);
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        others.push(stmt);
+                    }
+                    _statements.sort((a, b) => (a.original ? a.original.pos : a.pos) - (b.original ? b.original.pos : b.pos));
+                    _statements.push(...others);
+                    (body as any).statements = _statements;
+                }
+            }
             emitSignatureAndBody(node, emitSignatureHead);
         }
 
@@ -2501,7 +2533,21 @@ namespace ts {
             }
         }
 
+        function emitOptimizedPropertyAccessExpression(node: PropertyAccessExpression, anode: any) {
+            // transform to ident.prop into $__getByIdOffset(ident, "prop", offset);
+            const fun = factory.createIdentifier("getByIdOffset");
+            const prop = factory.createStringLiteral(anode.__accessFlags.property);
+            const offset = factory.createIdentifier(String(anode.__accessFlags.offset));
+            writer.write("$__");
+            const expr = factory.createCallExpression(fun, (void 0), [node.expression, prop, offset]);
+            emitExpression(expr);
+        }
+
         function emitPropertyAccessExpression(node: PropertyAccessExpression) {
+            const anode = (node as any);
+            if (anode.__accessFlags) {
+                return emitOptimizedPropertyAccessExpression(node, anode);
+            }
             emitExpression(node.expression, parenthesizer.parenthesizeLeftSideOfAccess);
             const token = node.questionDotToken || setTextRangePosEnd(factory.createToken(SyntaxKind.DotToken) as DotToken, node.expression.end, node.name.pos);
             const linesBeforeDot = getLinesBetweenNodes(node, node.expression, token);

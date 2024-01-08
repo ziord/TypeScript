@@ -6669,6 +6669,7 @@ namespace ts {
         esModuleInterop?: boolean;
         /* @internal */ showConfig?: boolean;
         useDefineForClassFields?: boolean;
+        optimizeWithTypes?: boolean;
 
         [option: string]: CompilerOptionsValue | TsConfigSourceFile | undefined;
     }

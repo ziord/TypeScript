@@ -358,6 +358,7 @@ namespace ts {
         const useDefineForClassFields = getUseDefineForClassFields(compilerOptions);
         const allowSyntheticDefaultImports = getAllowSyntheticDefaultImports(compilerOptions);
         const strictNullChecks = getStrictOptionValue(compilerOptions, "strictNullChecks");
+        const optimizeWithTypes = compilerOptions.optimizeWithTypes;
         const strictFunctionTypes = getStrictOptionValue(compilerOptions, "strictFunctionTypes");
         const strictBindCallApply = getStrictOptionValue(compilerOptions, "strictBindCallApply");
         const strictPropertyInitialization = getStrictOptionValue(compilerOptions, "strictPropertyInitialization");
@@ -29692,7 +29693,60 @@ namespace ts {
 
                 propType = isThisPropertyAccessInConstructor(node, prop) ? autoType : writing ? getWriteTypeOfSymbol(prop) : getTypeOfSymbol(prop);
             }
-
+            // readonly access, base class only
+            if (prop && node.kind === SyntaxKind.PropertyAccessExpression && optimizeWithTypes) {
+                if (!isThisPropertyAccessInConstructor(node, prop)) { 
+                    // readonly properties and for base classes only
+                    const _name = (prop as any).escapedName;
+                    const _typ = (apparentType as any);
+                    const declaration = _typ.symbol ? getClassLikeDeclarationOfSymbol(_typ.symbol) : undefined;
+                    const isAbstract = !!declaration && hasSyntacticModifier(declaration, ModifierFlags.Abstract);
+                    const isThis = left.kind === SyntaxKind.ThisKeyword && !isAssignmentTarget(node);
+                    const isClassLikeTy = (
+                        (!!_typ.symbol && _typ.instantiations !== undefined && _typ.resolvedBaseConstructorType !== undefined && _typ.target !== undefined && _typ.thisType !== undefined)
+                        || isThis
+                    );
+                    const isBuiltinTy = apparentType.symbol && builtinGlobals.has(apparentType.symbol.escapedName);
+                    // satisfies a class type if it's norminal or it's a lhs is a `this` keyword -- second part of this assumption holds for _most_ cases
+                    const satisfiesClsTy = (
+                        !isBuiltinTy && !isAbstract && isClassLikeTy && !isNullableType(propType) &&
+                        !(["name", "length", "caller", "arguments", "prototype"].includes(_name))
+                    );
+                    // we want to only optimize base classes, and not child classes, or classes with no inheritance at all
+                    // for a 'this' class type, the `declaredProperties` may not be fully resolved during a property access, and thus would be undefined,
+                    // hence we also check the `properties` field, which contains properties of the class being resolved at the time.
+                    const isEligibleClsTy = ((_typ.resolvedBaseTypes && _typ.resolvedBaseTypes.length === 0) || (isThis && (_typ.declaredProperties || _typ.properties)));
+                    if (satisfiesClsTy && isReadonlySymbol(prop) && isEligibleClsTy) {
+                        const getOffset = (props: any[], ppty: any) => {
+                            const index = props.indexOf(ppty);
+                            return index !== -1 ? index : undefined;
+                        };
+                        // tsc reorders class fields with default values, so we handle that here to get the proper offset
+                        const properties = [];
+                        const defaults = [];
+                        const allProperties = _typ.declaredProperties || _typ.properties;
+                        for (const _p of allProperties) {
+                            if (isReadonlySymbol(_p)) {
+                                properties.push(_p);
+                            } else {
+                                defaults.push(_p);
+                            }
+                        }
+                        properties.sort((a, b) => a.valueDeclaration.pos - b.valueDeclaration.pos);
+                        properties.push(...defaults);
+                        const offset = getOffset(properties.map((x) => x.escapedName), _name);
+                        if (offset !== undefined) {
+                            // validate that the property is not a setter / getter
+                            const sym = properties[offset];
+                            const getter = getDeclarationOfKind<AccessorDeclaration>(sym, SyntaxKind.GetAccessor);
+                            const setter = getDeclarationOfKind<AccessorDeclaration>(sym, SyntaxKind.SetAccessor);
+                            if (!getter && !setter) {
+                                (node as any).__accessFlags = { property: node.name.escapedText, offset };
+                            }
+                        }
+                    }
+                }
+            }
             return getFlowTypeOfAccessExpression(node, prop, propType, right, checkMode);
         }
 

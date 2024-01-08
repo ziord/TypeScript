@@ -40,6 +40,11 @@
             "problemMatcher": [
                 "$tsc"
             ],
+        },
+        {
+            "label": "TSC Build",
+            "type": "shell",
+            "command": "make"
         }
     ]
 }
