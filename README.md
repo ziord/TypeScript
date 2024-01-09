@@ -13,6 +13,8 @@ Run `make` to build the project. The built tsc is stored in `built/local/tsc.js`
 ## Testing
 After building test programs using `node/bun built/local/tsc.js -p path/to/tsconfig.json`
 
+---
+
 # TypeScript
 
 [![GitHub Actions CI](https://github.com/microsoft/TypeScript/workflows/CI/badge.svg)](https://github.com/microsoft/TypeScript/actions?query=workflow%3ACI)
