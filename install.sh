@@ -14,5 +14,7 @@ else
     echo "Node.js and npm are already installed."
 fi
 
-npm i -g gulp-cli
+if ! command -v gulp &> /dev/null; then
+    npm i -g gulp-cli
+fi
 make
