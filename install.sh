@@ -17,4 +17,5 @@ fi
 if ! command -v gulp &> /dev/null; then
     npm i -g gulp-cli
 fi
+npm install
 make
