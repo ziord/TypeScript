@@ -411,6 +411,15 @@ namespace ts {
         return !nodeTest || nodeTest(node) ? node : undefined;
     }
 
+    export function getOriginalFromNode(node: Node | undefined, nodeTest: (node: Node | undefined) => boolean): Node | undefined {
+        if (node) {
+            while (node.original !== undefined) {
+                node = node.original;
+            }
+        }
+        return nodeTest(node) ? node : undefined;
+    }
+
     /**
      * Iterates through the parent chain of a node and performs the callback on each parent until the callback
      * returns a truthy value, then returns that value.
