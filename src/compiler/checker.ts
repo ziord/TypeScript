@@ -1069,6 +1069,8 @@ namespace ts {
         const flaggedTypes = new Map<number, Type>();
         // store all nodes for which layout metadata has been computed - key is the type id
         const computedLayouts = new Map<number, OptInfo[]>();
+        // max inline slots
+        const maxInlineSlots = 0x40;
 
         // Extensions suggested for path imports when module resolution is node16 or higher.
         // The first element of each tuple is the extension a file has.
@@ -29744,7 +29746,7 @@ namespace ts {
                             propSym.parent && propSym.parent.valueDeclaration &&
                             propSym.parent.valueDeclaration.id === _typ.symbol.valueDeclaration.id
                         ));
-                        const namedProperties = properties.map((x: Symbol) => x.escapedName);
+                        const namedProperties = properties.map((x: Symbol) => x.escapedName).slice(0, maxInlineSlots);
                         const offset = getOffset(namedProperties, _name);
                         if (offset !== undefined) {
                             // validate that the property is not a setter / getter
