@@ -1,7 +1,5 @@
 namespace ts {
     const brackets = createBracketsMap();
-    // Hook for compiler options. We need this for class property reordering.
-    let _myCompilerOptions: CompilerOptions;
 
     /*@internal*/
     export function isBuildInfoFile(file: string) {
@@ -26,7 +24,6 @@ namespace ts {
         includeBuildInfo?: boolean) {
         const sourceFiles = isArray(sourceFilesOrTargetSourceFile) ? sourceFilesOrTargetSourceFile : getSourceFilesToEmit(host, sourceFilesOrTargetSourceFile, forceDtsEmit);
         const options = host.getCompilerOptions();
-        _myCompilerOptions = options;
         if (outFile(options)) {
             const prepends = host.getPrependNodes();
             if (sourceFiles.length || prepends.length) {
@@ -2139,36 +2136,33 @@ namespace ts {
             emitBlockFunctionBody(node.body);
         }
 
+        function genFieldLayoutStatement(field: string, offset: number) {
+            // layout class field in constructor $__putByValDirect(this, "prop", offset);
+            const func = factory.createIdentifier("$__putByIdDirect");
+            const thisArg = factory.createIdentifier("this");
+            const property = factory.createStringLiteral(field);
+            const propertyOffset = factory.createIdentifier(`void ${offset}`);
+            const expr = factory.createCallExpression(func, (void 0), [thisArg, property, propertyOffset]);
+            return factory.createExpressionStatement(expr);
+        }
+
+        function genFieldsLayout(fields: string[]): Statement[] {
+            return fields.map((field, offset) => genFieldLayoutStatement(field, offset));
+        }
+
         function emitConstructor(node: ConstructorDeclaration) {
             emitModifiers(node, node.modifiers);
             writeKeyword("constructor");
             {
                 const body = node.body;
-                if (body && isBlock(body) && _myCompilerOptions && _myCompilerOptions.optimizeWithTypes) {
-                    // reorder statements, putting all readonly assignment first
-                    const statements = (body.statements as any as Statement[]);
-                    const _statements = [];
-                    const others = [];
-                    for (const stmt of statements) {
-                        if (isExpressionStatement(stmt) && isAssignmentExpression(stmt.expression)) {
-                            const tmp = stmt as any;
-                            if (tmp.original) {
-                                if (some(tmp.original.modifiers, (token: any) => token.kind === SyntaxKind.ReadonlyKeyword)) {
-                                    _statements.push(stmt);
-                                    continue;
-                                } else if (tmp.original.original) {
-                                    if (some(tmp.original.original.modifiers, (token: any) => token.kind === SyntaxKind.ReadonlyKeyword)) {
-                                        _statements.push(stmt);
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        others.push(stmt);
-                    }
-                    _statements.sort((a, b) => (a.original ? a.original.pos : a.pos) - (b.original ? b.original.pos : b.pos));
-                    _statements.push(...others);
-                    (body as any).statements = _statements;
+                const fieldsLayout = (
+                    (node as any).__fieldsLayout ||
+                    (getOriginalFromNode(node, (nd: Node) => nd.kind === SyntaxKind.Constructor) as any).__fieldsLayout
+                );
+                if (fieldsLayout && body && isBlock(body)) {
+                    const statements = genFieldsLayout(fieldsLayout);
+                    statements.push(...body.statements);
+                    (body as any).statements = statements;
                 }
             }
             emitSignatureAndBody(node, emitSignatureHead);
@@ -3370,6 +3364,13 @@ namespace ts {
 
             writeSpace();
             writePunctuation("{");
+            const original = getOriginalFromNode(node, (nd: Node) => nd && nd.kind === SyntaxKind.ClassDeclaration) as any;
+            if (original && original.__fieldsLayout) {
+                const constructor = node.members.find((nd) => nd.kind === SyntaxKind.Constructor);
+                if (constructor) {
+                    (constructor as any).__fieldsLayout = original.__fieldsLayout;
+                }
+            }
             emitList(node, node.members, ListFormat.ClassMembers);
             writePunctuation("}");
 

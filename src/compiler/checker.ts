@@ -1063,6 +1063,13 @@ namespace ts {
         const builtinGlobals = createSymbolTable();
         builtinGlobals.set(undefinedSymbol.escapedName, undefinedSymbol);
 
+        // First Node is the property access expression, second is the constructor
+        type OptInfo = [Node, Node];
+        // store types flagged against nomality checks - key is the type id
+        const flaggedTypes = new Map<number, Type>();
+        // store all nodes for which layout metadata has been computed - key is the type id
+        const computedLayouts = new Map<number, OptInfo[]>();
+
         // Extensions suggested for path imports when module resolution is node16 or higher.
         // The first element of each tuple is the extension a file has.
         // The second element of each tuple is the extension that should be used in a path import.
@@ -29576,6 +29583,10 @@ namespace ts {
                 && getThisContainer(node, /*includeArrowFunctions*/ true) === getDeclaringConstructor(prop);
         }
 
+        function isThisPropertyAccessInConstructorStrict(node: ElementAccessExpression | PropertyAccessExpression | QualifiedName) {
+            return isThisProperty(node) && (getThisContainer(node, /*includeArrowFunctions*/ true).kind === SyntaxKind.Constructor);
+        }
+
         function checkPropertyAccessExpressionOrQualifiedName(node: PropertyAccessExpression | QualifiedName, left: Expression | QualifiedName, leftType: Type, right: Identifier | PrivateIdentifier, checkMode: CheckMode | undefined) {
             const parentSymbol = getNodeLinks(left).resolvedSymbol;
             const assignmentKind = getAssignmentTargetKind(node);
@@ -29695,8 +29706,7 @@ namespace ts {
             }
             // readonly access, base class only
             if (prop && node.kind === SyntaxKind.PropertyAccessExpression && optimizeWithTypes) {
-                if (!isThisPropertyAccessInConstructor(node, prop)) { 
-                    // readonly properties and for base classes only
+                if (apparentType.symbol && !isThisPropertyAccessInConstructorStrict(node) && !isAssignmentTarget(node)) {
                     const _name = (prop as any).escapedName;
                     const _typ = (apparentType as any);
                     const declaration = _typ.symbol ? getClassLikeDeclarationOfSymbol(_typ.symbol) : undefined;
@@ -29709,39 +29719,51 @@ namespace ts {
                     const isBuiltinTy = apparentType.symbol && builtinGlobals.has(apparentType.symbol.escapedName);
                     // satisfies a class type if it's norminal or it's a lhs is a `this` keyword -- second part of this assumption holds for _most_ cases
                     const satisfiesClsTy = (
-                        !isBuiltinTy && !isAbstract && isClassLikeTy && !isNullableType(propType) &&
+                        !isBuiltinTy && !isAbstract && isClassLikeTy &&
                         !(["name", "length", "caller", "arguments", "prototype"].includes(_name))
                     );
                     // we want to only optimize base classes, and not child classes, or classes with no inheritance at all
                     // for a 'this' class type, the `declaredProperties` may not be fully resolved during a property access, and thus would be undefined,
                     // hence we also check the `properties` field, which contains properties of the class being resolved at the time.
-                    const isEligibleClsTy = ((_typ.resolvedBaseTypes && _typ.resolvedBaseTypes.length === 0) || (isThis && (_typ.declaredProperties || _typ.properties)));
-                    if (satisfiesClsTy && isReadonlySymbol(prop) && isEligibleClsTy) {
-                        const getOffset = (props: any[], ppty: any) => {
+                    const isEligibleClsTy = (
+                        ((_typ.resolvedBaseTypes && _typ.resolvedBaseTypes.length === 0) || (isThis && !!(_typ.declaredProperties || _typ.properties))) &&
+                        !(_typ.symbol.valueDeclaration && _typ.symbol.valueDeclaration.heritageClauses)
+                    );
+                    // if this type has not been flagged before
+                    const isNotFlaggedTy = !flaggedTypes.has(_typ.symbol.id);
+                    if (satisfiesClsTy && isEligibleClsTy && isNotFlaggedTy) {
+                        const getOffset = (props: string[], ppty: string) => {
                             const index = props.indexOf(ppty);
                             return index !== -1 ? index : undefined;
                         };
                         // tsc reorders class fields with default values, so we handle that here to get the proper offset
-                        const properties = [];
-                        const defaults = [];
-                        const allProperties = _typ.declaredProperties || _typ.properties;
-                        for (const _p of allProperties) {
-                            if (isReadonlySymbol(_p)) {
-                                properties.push(_p);
-                            } else {
-                                defaults.push(_p);
-                            }
-                        }
-                        properties.sort((a, b) => a.valueDeclaration.pos - b.valueDeclaration.pos);
-                        properties.push(...defaults);
-                        const offset = getOffset(properties.map((x) => x.escapedName), _name);
+                        const isNotMethodOrFunction = (nd: Node) => !(isMethodDeclaration(nd) || isFunctionDeclaration(nd) || isFunctionExpression(nd));
+                        let properties = (_typ.declaredProperties || _typ.properties).filter((sym: Symbol) => isNotMethodOrFunction(sym.valueDeclaration!));
+                        properties.sort((a: Symbol, b: Symbol) => a.valueDeclaration!.pos - b.valueDeclaration!.pos);
+                        properties = properties.filter((propSym: Symbol) => (
+                            propSym.parent && propSym.parent.valueDeclaration &&
+                            propSym.parent.valueDeclaration.id === _typ.symbol.valueDeclaration.id
+                        ));
+                        const namedProperties = properties.map((x: Symbol) => x.escapedName);
+                        const offset = getOffset(namedProperties, _name);
                         if (offset !== undefined) {
                             // validate that the property is not a setter / getter
                             const sym = properties[offset];
                             const getter = getDeclarationOfKind<AccessorDeclaration>(sym, SyntaxKind.GetAccessor);
                             const setter = getDeclarationOfKind<AccessorDeclaration>(sym, SyntaxKind.SetAccessor);
                             if (!getter && !setter) {
-                                (node as any).__accessFlags = { property: node.name.escapedText, offset };
+                                (node as any).__accessFlags = { property: _name, offset };
+                                const constructor = _typ.symbol.valueDeclaration.members.find((node: Node) => node.kind === SyntaxKind.Constructor);
+                                const target = constructor || _typ.symbol.valueDeclaration;
+                                if (!target.__fieldsLayout) {
+                                    target.__fieldsLayout = namedProperties;
+                                }
+                                if (!computedLayouts.has(_typ.symbol.id)) {
+                                    computedLayouts.set(_typ.symbol.id, [[node, target]]);
+                                }
+                                else {
+                                    computedLayouts.get(_typ.symbol.id)?.push([node, target]);
+                                }
                             }
                         }
                     }
@@ -33791,6 +33813,20 @@ namespace ts {
                     error(expr, Diagnostics.The_operand_of_a_delete_operator_cannot_be_a_read_only_property);
                 }
                 checkDeleteExpressionMustBeOptional(expr, symbol);
+            }
+            if (isPropertyAccessExpression(expr)) {
+                const _typ = checkNonNullExpression(expr.expression);
+                const typ = getApparentType(!isAssignmentTarget(node) || isMethodAccessForCall(expr) ? getWidenedType(_typ) : _typ);
+                const layouts = computedLayouts.get(typ.symbol.id!);
+                if (layouts) {
+                    for (const data of layouts) {
+                        delete (data[0] as any).__accessFlags;
+                        delete (data[1] as any).__fieldsLayout;
+                    }
+                }
+                if (!flaggedTypes.has(typ.symbol.id!)) {
+                    flaggedTypes.set(typ.symbol.id!, typ);
+                }
             }
             return booleanType;
         }
